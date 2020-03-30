@@ -1,0 +1,51 @@
+# -*- coding:utf-8 -*-
+# Author: Tianbao
+
+from os import listdir
+from numpy import *
+from sklearn.neighbors import KNeighborsClassifier as kNN
+
+
+def img2vector(filename):
+    # 函数功能：将图像转换为向量
+    returnVect = zeros((1, 1024))
+    fr = open(filename)
+    for i in range(32):
+        lineStr = fr.readline()
+        for j in range(32):
+            returnVect[0, 32 * i + j] = int(lineStr[j])
+    return returnVect
+
+
+def handWritingClassTest():
+    hwLabels = []  # 测试集的label
+    trainingFileList = listdir('trainingDigits')  # 返回该目录下的文件名
+    m = len(trainingFileList)  # 文件个数
+    trainingMat = zeros((m, 1024))  # 训练矩阵
+    # 获得训练集类别
+    for i in range(m):
+        fileTNameStr = trainingFileList[i]  # 文件名字
+        classNumber = int(fileTNameStr.split('_')[0])  # 分类数字
+        hwLabels.append(classNumber)  # 将标签添加到标签矩阵中
+        trainingMat[i, :] = img2vector('trainingDigits/%s' % fileTNameStr)
+
+    neigh = kNN(n_neighbors=5, algorithm='auto')  # 构建kNN分类器
+    neigh.fit(trainingMat, hwLabels)  # 拟合模型
+    testFileList = listdir('testDigits')
+    mTest = len(testFileList)  # 测试数据数量
+    errorCount = 0  # 错误检测计数
+
+    # 分类测试
+    for i in range(mTest):
+        fileNameStr = testFileList[i]
+        classNumber = int(fileNameStr.split('_')[0])
+        vectorTest = img2vector('testDigits/%s' % fileNameStr)
+        classfierResult = neigh.predict(vectorTest)
+        print('分类返回结果为%d\t真是结果为%d' % (classfierResult, classNumber))
+        if classfierResult != classNumber:
+            errorCount += 1.0
+    print('总计错误%d个\n错误率为%f%%' % (errorCount, errorCount / mTest * 100))
+
+
+if __name__ == '__main__':
+    handWritingClassTest()
