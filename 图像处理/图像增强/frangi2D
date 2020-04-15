@@ -1,0 +1,180 @@
+# -*- coding:utf-8 -*-
+# Author: Tianbao
+import cv2
+import matplotlib.pyplot as plt
+import numpy as np
+from scipy import signal
+
+
+class Frangi2D:
+    defaultOptions = {'FrangiScaleRange': [1, 30], 'FrangiScaleRatio': 3, 'FrangiBetaOne': 0.5, 'FrangiBetaTwo': 15,
+                      'verbose': True, 'BlackWhite': True}
+
+    def __init__(self, I):
+        self.I = I
+
+    def Hessian2D(self, sigma):
+        """
+        二阶Hessian矩阵滤波
+        :param I: 输入图像,单通道
+        :param sigma: 高斯滤波卷积核尺度
+        :return: Dxx,Dxy,Dyy-图像二阶导数
+        """
+        if sigma < 1:
+            print('Error:sigma<1')
+            return -1
+        I = np.array(self.I, dtype=float)
+        sigmaRound = np.round(3 * sigma)
+        [X, Y] = np.mgrid[-sigmaRound:sigmaRound + 1, -sigmaRound:sigmaRound + 1]
+
+        DGaussxx = 1 / (2 * np.pi * sigma ** 4) * (np.power(X, 2) / sigma ** 2 - 1) * np.exp(
+            -(np.power(X, 2) + np.power(Y, 2)) / (2 * sigma ** 2))
+        DGaussxy = 1 / (2 * np.pi * sigma ** 6) * (np.multiply(X, Y)) * np.exp(
+            -(np.power(X, 2) + np.power(Y, 2)) / (2 * sigma ** 2))
+        DGaussyy = DGaussxx
+        Dxx = signal.convolve2d(I, DGaussxx, boundary='fill', mode='same', fillvalue=0)
+        Dxy = signal.convolve2d(I, DGaussxy, boundary='fill', mode='same', fillvalue=0)
+        Dyy = signal.convolve2d(I, DGaussyy, boundary='fill', mode='same', fillvalue=0)
+
+        return Dxx, Dxy, Dyy
+
+    def eig2image(self, Dxx, Dxy, Dyy):
+        """
+        计算特征值、特征向量
+        :param Dxx: 图像二阶导数
+        :param Dxy: 图像二阶导数
+        :param Dyy: 图像二阶导数
+        :return: lamda1、lamda2-特征值
+                 Ix、Iy-特征向量
+        """
+        Dxx = np.array(Dxx, dtype=float)
+        Dxy = np.array(Dxy, dtype=float)
+        Dyy = np.array(Dyy, dtype=float)
+        if len(Dxx.shape) != 2:
+            print("len(Dxx.shape)!=2,Dxx不是二维数组！")
+            return 0
+
+        tmp = np.sqrt(np.power((Dxx - Dyy), 2) + 4 * np.power(Dxy, 2))
+        v2x = 2 * Dxy
+        v2y = Dyy - Dxx + tmp
+
+        mag = np.sqrt(v2x ** 2 + v2y ** 2)
+        i = np.array(mag != 0)
+        v2x[i == True] = v2x[i == True] / mag[i == True]
+        v2y[i == True] = v2y[i == True] / mag[i == True]
+        v1x = -v2y
+        v1y = v2x
+
+        mu1 = 0.5 * (Dxx + Dyy + tmp)
+        mu2 = 0.5 * (Dxx + Dyy - tmp)
+
+        check = abs(mu1) > abs(mu2)
+        lamda1 = mu1.copy()
+        lamda1[check == True] = mu2[check == True]
+        lamda2 = mu2
+        lamda2[check == True] = mu1[check == True]
+
+        Ix = v1x
+        Ix[check == True] = v2x[check == True]
+        Iy = v1y
+        Iy[check == True] = v2y[check == True]
+
+        return lamda1, lamda2, Ix, Iy
+
+    def FrangiFilter2D(self):
+        """
+        Frangi滤波
+        :param I: 输入图像
+        :param options:Struct with input options,
+                      .FrangiScaleRange : The range of sigmas used, default [1 8]
+                      .FrangiScaleRatio : Step size between sigmas, default 2
+                      .FrangiBetaOne : Frangi correction constant, default 0.5
+                      .FrangiBetaTwo : Frangi correction constant, default 15
+                      .BlackWhite : Detect black ridges (default) set to true, for
+                                      white ridges set to false.
+                      .verbose : Show debug information, default true
+        :return:outI-血管增强图像
+        """
+        I = np.array(self.I, dtype=float)
+        '''
+        optionsExists = 'options' in locals()
+        if optionsExists == False:
+            options = self.defaultOptions
+        else:
+            i = 0
+            for key in self.defaultOptions.keys():
+                self.defaultOptions[key] = options[0]
+                i += 1
+            options = self.defaultOptions
+        '''
+        options = self.defaultOptions
+        sigmas = np.arange(options['FrangiScaleRange'][0], options['FrangiScaleRange'][1], options['FrangiScaleRatio'])
+        sigmas.sort()  # 升序
+
+        beta = 2 * options['FrangiBetaOne'] ** 2
+        C = 2 * options['FrangiBetaTwo'] ** 2
+
+        h, w = I.shape
+        ALLfiltered = np.zeros((h, w, len(sigmas)))
+        ALLangles = np.zeros((h, w, len(sigmas)))
+
+        Rb = 0
+        s2 = 0
+        for i in range(len(sigmas)):
+            if options['verbose']:
+                print('Current Frangi Filter Sigma: ', sigmas[i])
+            Dxx, Dxy, Dyy = self.Hessian2D(sigmas[i])
+            Dxx = sigmas[i] ** 2 * Dxx
+            Dxy = sigmas[i] ** 2 * Dxy
+            Dyy = sigmas[i] ** 2 * Dyy
+
+            lamda1, lamda2, Ix, Iy = self.eig2image(Dxx, Dxy, Dyy)
+            angles = np.arctan2(Ix, Iy)
+
+            lamda1[lamda1 == 0] = np.spacing(1)
+
+            Rb = (lamda2 / lamda1) ** 2
+            S2 = lamda1 ** 2 + lamda2 ** 2
+
+            Ifiltered = np.exp(-Rb / beta) * (np.ones(I.shape) - np.exp(-S2 / C))
+            if options['BlackWhite']:
+                Ifiltered[lamda1 < 0] = 0
+            else:
+                Ifiltered[lamda1 > 0] = 0
+
+                # store the results in 3D matrices
+            ALLfiltered[:, :, i] = Ifiltered
+            ALLangles[:, :, i] = angles
+
+            # Return for every pixel the value of the scale(sigma) with the maximum
+            # output pixel value
+            if len(sigmas) > 1:
+                outI = ALLfiltered.max(2)
+            else:
+                outI = (outI.transpose()).reshape(I.shape)
+
+        return outI
+
+
+if __name__ == '__main__':
+    img = cv2.imread('42.jpg', 0)  # 读入图像
+    img = cv2.resize(img, (256, 256))  # 调整尺寸
+    # ROI
+    hist0 = cv2.calcHist([img], [0], None, [256], [0, 256])  # 原图灰度直方图
+    thresh0, threshImg = cv2.threshold(img, 45, 255, cv2.THRESH_BINARY)  # 阈值分割
+    newImg = img & threshImg
+    '''
+    thresh0, threshImg = cv2.threshold(img, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # 阈值分割
+    cannyImg = cv2.Canny(img, 40, 50)  # canny边缘检测
+    newImg = ~threshImg - cannyImg
+    kernel = np.ones((3, 3), np.uint8)
+    erosionImg = cv2.erode(newImg, kernel, iterations=3)
+    closeImg=cv2.morphologyEx(erosionImg,cv2.MORPH_OPEN,kernel,iterations=6)
+    '''
+    # 图像增强
+    newImg=cv2.normalize(newImg.astype('float'),None,0.0,1.0,cv2.NORM_MINMAX)
+    filter = Frangi2D(newImg)
+    outI = filter.FrangiFilter2D()
+    outI = outI*(10000)
+
+   
